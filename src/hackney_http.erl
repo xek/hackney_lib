@@ -105,6 +105,9 @@ parser() ->
 %%   before we give up.</li>
 %%   <li>`{max_lines_empty, Max}': the maximum number of empty line we
 %%   accept before the first line happen</li>
+%%   <li>`{method, Method}': set the method of the request,
+%%   if Method =:= <<"HEAD">>, body is not read and {done, Buffer} is returned
+%%   immediately after reading the headers</li>
 %% </ul>
 -spec parser(parser_options()) -> parser().
 parser(Options) ->
@@ -218,6 +221,7 @@ parse_reason(Reason, St, Version, StatusCode) ->
 
     NState = St#hparser{type=response,
                         version=Version,
+			status=StatusInt,
                         state=on_header,
                         partial_headers=[]},
     {response, Version, StatusInt, Reason, NState}.
@@ -324,19 +328,24 @@ parse_trailers(St, Acc) ->
         _ -> error
     end.
 
-parse_body(St=#hparser{body_state=waiting, te=TE, clen=Length,
-                       method=Method, buffer=Buffer}) ->
-	case TE of
-		<<"chunked">> ->
-			parse_body(St#hparser{body_state=
-				{stream, fun te_chunked/2, {0, 0}, fun ce_identity/1}});
-		_ when Length =:= 0 orelse Method =:= <<"HEAD">> ->
+parse_body(St=#hparser{body_state=waiting, type=Type, te=TE, clen=Length,
+                       method=Method, buffer=Buffer, status=Status}) ->
+    case TE of
+	<<"chunked">> ->
+	    parse_body(
+	      St#hparser{body_state={stream, fun te_chunked/2, {0, 0},
+				     fun ce_identity/1}});
+	_ when Length =:= 0
+	       orelse (Type =:= request andalso Length =:= undefined)
+	       orelse (Type =:= response
+		       andalso (Status =:= 304 orelse Status =:= 204 orelse
+				Status < 200 orelse Method =:= <<"HEAD">>)) ->
             {done, Buffer};
         _ ->
-		    parse_body(St#hparser{body_state=
-						{stream, fun te_identity/2, {0, Length},
-						 fun ce_identity/1}})
-	end;
+	    parse_body(
+	      St#hparser{body_state={stream, fun te_identity/2, {0, Length},
+				     fun ce_identity/1}})
+    end;
 parse_body(#hparser{body_state=done, buffer=Buffer}) ->
 	{done, Buffer};
 parse_body(St=#hparser{buffer=Buffer, body_state={stream, _, _, _}})
@@ -494,6 +503,8 @@ parse_options([{max_line_length, MaxLength} | Rest], St) ->
     parse_options(Rest, St#hparser{max_line_length=MaxLength});
 parse_options([{max_empty_lines, MaxEmptyLines} | Rest], St) ->
     parse_options(Rest, St#hparser{max_empty_lines=MaxEmptyLines});
+parse_options([{method, Method} | Rest], St) ->
+    parse_options(Rest, St#hparser{method=Method});
 parse_options([_ | Rest], St) ->
     parse_options(Rest, St).
 
@@ -505,6 +516,8 @@ get_property(version, #hparser{version=Version}) ->
     Version;
 get_property(method, #hparser{method=Method}) ->
     Method;
+get_property(status, #hparser{status=Status}) ->
+    Status;
 get_property(transfer_encoding, #hparser{te=TE}) ->
     TE;
 get_property(content_length, #hparser{clen=CLen}) ->

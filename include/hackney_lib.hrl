@@ -23,6 +23,7 @@
                   buffer = <<>>,
                   version,
                   method,
+		  status,
                   partial_headers=[],
                   clen,
                   te,
